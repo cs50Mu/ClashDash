@@ -1,0 +1,21 @@
+# Xcode
+*.xcworkspace
+xcuserdata/
+DerivedData/
+build/
+*.ipa
+
+# macOS
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment / Secrets
+.env
+*.env.local
