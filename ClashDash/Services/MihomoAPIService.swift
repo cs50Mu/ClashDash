@@ -160,7 +160,7 @@ final class MihomoAPIService {
 
     // MARK: - Proxies
 
-    func fetchProxies() async throws -> (groups: [ProxyGroup], nodes: [ProxyNode], providers: [ProxyProvider]) {
+    func fetchProxies() async throws -> (groups: [ProxyGroup], nodes: [ProxyNode], providers: [ProxyProvider], globalOrder: [String]) {
         let req = try request(path: "proxies")
         let data: Data
         let response: URLResponse
@@ -171,8 +171,8 @@ final class MihomoAPIService {
             throw MihomoAPIError.requestFailed(0, "Failed to fetch proxies")
         }
 
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let proxiesDict = json["proxies"] as? [String: [String: Any]] else {
+        guard let jsonObject = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let proxiesDict = jsonObject["proxies"] as? [String: [String: Any]] else {
             throw MihomoAPIError.decodingFailed("Invalid proxies response")
         }
 
@@ -180,25 +180,48 @@ final class MihomoAPIService {
         var nodes: [ProxyNode] = []
         let providers: [ProxyProvider] = []
 
-        for (name, dict) in proxiesDict {
-            guard let typeStr = dict["type"] as? String else { continue }
+        // 使用 NSDictionary.allKeys 保留 JSON 原始 key 顺序（配置文件中的顺序）
+        // JSONSerialization 在 modern Foundation（iOS 13+ / macOS 10.15+）中
+        // 创建的 NSDictionary 会保持 key 的插入顺序
+        let orderedKeys = (proxiesDict as NSDictionary).allKeys as! [String]
+
+        for name in orderedKeys {
+            guard let dict = proxiesDict[name],
+                  let typeStr = dict["type"] as? String else { continue }
 
             if let groupType = ProxyGroupType(rawValue: typeStr) {
+                // 从服务端 history 字段提取最新延迟
+                let latestDelay: Int? = {
+                    guard let history = dict["history"] as? [[String: Any]],
+                          let last = history.last,
+                          let delay = last["delay"] as? Int else { return nil }
+                    return delay
+                }()
                 let group = ProxyGroup(
                     name: name,
                     type: groupType,
                     now: dict["now"] as? String,
                     all: dict["all"] as? [String],
-                    delay: nil
+                    hidden: dict["hidden"] as? Bool ?? false,
+                    delay: latestDelay
                 )
                 groups.append(group)
             } else {
-                let node = ProxyNode(name: name, type: typeStr, delay: nil)
+                // 从服务端 history 提取节点延迟
+                let nodeDelay: Int? = {
+                    guard let history = dict["history"] as? [[String: Any]],
+                          let last = history.last,
+                          let delay = last["delay"] as? Int else { return nil }
+                    return delay
+                }()
+                let node = ProxyNode(name: name, type: typeStr, delay: nodeDelay)
                 nodes.append(node)
             }
         }
 
-        return (groups, nodes, providers)
+        // 从 GLOBAL 组的 all 字段获取配置文件原始顺序（参考 zashboard 的做法）
+        let globalAll = (groups.first(where: { $0.name == "GLOBAL" })?.all ?? [])
+        return (groups, nodes, providers, globalAll)
     }
 
     func switchProxy(groupName: String, to proxyName: String) async throws {

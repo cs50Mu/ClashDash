@@ -14,12 +14,13 @@ struct ProxiesView: View {
     var body: some View {
         NavigationStack {
             List {
-                // Groups
-                ForEach(vm.filteredGroups) { group in
+                // Proxy groups only (no standalone nodes, no providers)
+                ForEach(vm.sortedGroups) { group in
                     ProxyGroupSection(
                         group: group,
                         isExpanded: expandedGroups.contains(group.name),
                         nodeDelayMap: vm.nodeDelayMap,
+                        isTesting: vm.testingGroupNames.contains(group.name),
                         onToggle: { toggleGroup(group.name) },
                         onSelectNode: { nodeName in
                             switchProxy(group: group, to: nodeName)
@@ -34,31 +35,6 @@ struct ProxiesView: View {
                             testNodeDelay(nodeName)
                         }
                     )
-                }
-
-                // Standalone nodes
-                if !vm.filteredNodes.isEmpty {
-                    Section("独立节点") {
-                        ForEach(vm.filteredNodes) { node in
-                            ProxyNodeRow(nodeName: node.name, type: node.type, delay: vm.nodeDelayMap[node.name])
-                        }
-                    }
-                }
-
-                // Providers
-                if !vm.providers.isEmpty {
-                    ForEach(vm.providers) { provider in
-                        ProxyProviderSection(
-                            provider: provider,
-                            nodeDelayMap: vm.nodeDelayMap,
-                            onRefresh: {
-                                Task { try? await vm.refreshProvider(name: provider.name) }
-                            },
-                            onTestNode: { name in
-                                testNodeDelay(name)
-                            }
-                        )
-                    }
                 }
             }
             .navigationTitle("代理")
@@ -79,7 +55,6 @@ struct ProxiesView: View {
             .animation(.easeInOut(duration: 0.25), value: showToast)
         }
         .task { await vm.loadProxies() }
-        .task { await vm.loadProviders() }
         .onAppear { vm.startAutoRefresh() }
         .onDisappear { vm.stopAutoRefresh() }
     }
@@ -136,6 +111,7 @@ struct ProxyGroupSection: View {
     let group: ProxyGroup
     let isExpanded: Bool
     let nodeDelayMap: [String: Int]
+    let isTesting: Bool
     let onToggle: () -> Void
     let onSelectNode: (String) -> Void
     let onTestDelay: () -> Void
@@ -173,16 +149,22 @@ struct ProxyGroupSection: View {
 
                 Spacer()
 
-                // Speed test button for the group
+                // Speed test button for the group (shows spinner while testing)
                 if group.isSwitching {
                     Button {
                         onTestDelay()
                     } label: {
-                        Image(systemName: "bolt.fill")
-                            .font(.body)
-                            .foregroundStyle(.blue)
+                        if isTesting {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                                .frame(width: 20, height: 20)
+                        } else {
+                            Image(systemName: "bolt.fill")
+                                .font(.body)
+                        }
                     }
                     .buttonStyle(.plain)
+                    .disabled(isTesting)
                 }
 
                 if let delay = group.delay {
@@ -212,7 +194,8 @@ struct ProxyGroupSection: View {
 
                         Spacer()
 
-                        if let delay = nodeDelayMap[nodeName] {
+                        let delay = nodeName == group.now ? group.delay : nodeDelayMap[nodeName]
+                        if let delay {
                             Text(delay.formattedDelay())
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(Color.delayColor(delay))
@@ -241,87 +224,4 @@ struct ProxyGroupSection: View {
     }
 }
 
-// MARK: - Proxy Node Row
 
-struct ProxyNodeRow: View {
-    let nodeName: String
-    let type: String
-    let delay: Int?
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "circle.fill")
-                .font(.system(size: 8))
-                .foregroundStyle(type == "Direct" ? .green : (type == "Reject" ? .red : .blue))
-
-            Text(nodeName)
-                .font(.subheadline)
-
-            Spacer()
-
-            Text(type)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if let delay = delay {
-                Text(delay.formattedDelay())
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(Color.delayColor(delay))
-            }
-        }
-    }
-}
-
-// MARK: - Proxy Provider Section
-
-struct ProxyProviderSection: View {
-    let provider: ProxyProvider
-    let nodeDelayMap: [String: Int]
-    let onRefresh: () -> Void
-    let onTestNode: (String) -> Void
-
-    @State private var isExpanded = false
-
-    var body: some View {
-        Section {
-            Button(action: { withAnimation { isExpanded.toggle() } }) {
-                HStack(spacing: 12) {
-                    Image(systemName: "shippingbox")
-                        .foregroundStyle(.orange)
-                        .frame(width: 24)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(provider.name)
-                            .font(.body)
-                            .foregroundStyle(.primary)
-                        Text(provider.vehicleType)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                }
-            }
-            .buttonStyle(.plain)
-            .swipeActions(edge: .trailing) {
-                Button("更新") { onRefresh() }
-                    .tint(.orange)
-            }
-
-            if isExpanded, let proxies = provider.proxies {
-                ForEach(proxies) { node in
-                    ProxyNodeRow(nodeName: node.name, type: node.type, delay: nodeDelayMap[node.name])
-                        .swipeActions(edge: .trailing) {
-                            Button("测速") { onTestNode(node.name) }
-                                .tint(.blue)
-                        }
-                }
-            }
-        }
-    }
-}

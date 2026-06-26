@@ -86,7 +86,7 @@ final class OverviewViewModel {
     @MainActor func refreshStats() async {
         do {
             let conn = try await api.fetchConnections()
-            let proxies = try await api.fetchProxies()
+            let (groups, nodes, _, _) = try await api.fetchProxies()
             let rules = try await api.fetchRules()
 
             // Memory from connections response (already fetched above)
@@ -97,8 +97,8 @@ final class OverviewViewModel {
             activeConnections = conn.connections.count
             uploadTotal = conn.uploadTotal ?? 0
             downloadTotal = conn.downloadTotal ?? 0
-            proxyCount = proxies.nodes.count
-            groupCount = proxies.groups.count
+            proxyCount = nodes.count
+            groupCount = groups.count
             ruleCount = rules.count
         } catch {
             errorMessage = "刷新统计失败: \(error.localizedDescription)"

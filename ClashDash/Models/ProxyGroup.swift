@@ -33,6 +33,7 @@ struct ProxyGroup: Codable, Identifiable {
     let type: ProxyGroupType
     let now: String?
     let all: [String]?
+    let hidden: Bool
     var delay: Int?
 
     var id: String { name }
@@ -42,6 +43,6 @@ struct ProxyGroup: Codable, Identifiable {
     var isSwitching: Bool { type == .selector }
 
     private enum CodingKeys: String, CodingKey {
-        case name, type, now, all
+        case name, type, now, all, hidden
     }
 }

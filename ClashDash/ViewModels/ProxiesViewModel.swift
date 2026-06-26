@@ -5,8 +5,9 @@ import Observation
 final class ProxiesViewModel {
     var groups: [ProxyGroup] = []
     var nodes: [ProxyNode] = []
-    var providers: [ProxyProvider] = []
     var nodeDelayMap: [String: Int] = [:]
+    var testingGroupNames: Set<String> = []
+    var testingNodeNames: Set<String> = []
     var isLoading: Bool = false
     var errorMessage: String?
     var searchText: String = ""
@@ -21,17 +22,15 @@ final class ProxiesViewModel {
         self.api = api
     }
 
-    var filteredGroups: [ProxyGroup] {
-        guard !searchText.isEmpty else { return groups }
-        return groups.filter { group in
+    /// 按配置文件中的原始顺序展示（不做任何重排序）
+    /// 排除 hidden: true 的组，仅当有搜索文本时额外过滤
+    var sortedGroups: [ProxyGroup] {
+        let visible = groups.filter { !$0.hidden }
+        guard !searchText.isEmpty else { return visible }
+        return visible.filter { group in
             group.name.localizedCaseInsensitiveContains(searchText) ||
             group.all?.contains(where: { $0.localizedCaseInsensitiveContains(searchText) }) == true
         }
-    }
-
-    var filteredNodes: [ProxyNode] {
-        guard !searchText.isEmpty else { return nodes }
-        return nodes.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
     }
 
     func loadProxies() async {
@@ -39,13 +38,30 @@ final class ProxiesViewModel {
         errorMessage = nil
 
         do {
-            let (groups, nodes, _) = try await api.fetchProxies()
+            let (fetchedGroups, fetchedNodes, _, globalOrder) = try await api.fetchProxies()
+
             await MainActor.run {
-                self.groups = groups.sorted {
-                    if $0.isSwitching != $1.isSwitching { return $0.isSwitching }
-                    return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                if !globalOrder.isEmpty {
+                    // 按 GLOBAL.all 的顺序排列（= 配置文件 proxy-groups 的原始顺序）
+                    let orderIndex = Dictionary(uniqueKeysWithValues: globalOrder.enumerated().map { ($1, $0) })
+                    self.groups = fetchedGroups.sorted {
+                        (orderIndex[$0.name] ?? Int.max) < (orderIndex[$1.name] ?? Int.max)
+                    }
+                } else {
+                    self.groups = fetchedGroups
                 }
-                self.nodes = nodes
+                self.nodes = fetchedNodes
+                // 同步服务端返回的延迟到 nodeDelayMap（含节点和子 group），展开时即可显示
+                for node in fetchedNodes {
+                    if let delay = node.delay {
+                        self.nodeDelayMap[node.name] = delay
+                    }
+                }
+                for group in self.groups {
+                    if let delay = group.delay {
+                        self.nodeDelayMap[group.name] = delay
+                    }
+                }
                 isLoading = false
             }
         } catch {
@@ -56,34 +72,25 @@ final class ProxiesViewModel {
         }
     }
 
-    func loadProviders() async {
-        do {
-            let result = try await api.fetchProxyProviders()
-            await MainActor.run {
-                self.providers = result
-            }
-        } catch {
-            // Providers are optional, don't show error
-        }
-    }
-
     func switchProxy(groupName: String, to nodeName: String) async throws {
         try await api.switchProxy(groupName: groupName, to: nodeName)
     }
 
     func testNodeDelay(nodeName: String) async {
+        await MainActor.run { testingNodeNames.insert(nodeName) }
         do {
             let delay = try await api.testDelay(proxyName: nodeName, url: testURL, timeout: testTimeout)
             await MainActor.run {
                 self.nodeDelayMap[nodeName] = delay
-                // Update delay in groups
                 if let index = self.groups.firstIndex(where: { $0.name == nodeName }) {
                     self.groups[index].delay = delay
                 }
+                self.testingNodeNames.remove(nodeName)
             }
         } catch {
             await MainActor.run {
                 self.nodeDelayMap[nodeName] = -1
+                self.testingNodeNames.remove(nodeName)
             }
         }
     }
@@ -91,6 +98,8 @@ final class ProxiesViewModel {
     func testGroupDelay(groupName: String) async {
         guard let group = groups.first(where: { $0.name == groupName }),
               let allNodes = group.all else { return }
+
+        await MainActor.run { testingGroupNames.insert(groupName) }
 
         await withTaskGroup(of: (String, Int?).self) { taskGroup in
             for nodeName in allNodes {
@@ -105,30 +114,28 @@ final class ProxiesViewModel {
                 }
             }
 
-            var results: [String: Int] = [:]
             for await (name, delay) in taskGroup {
-                if let delay { results[name] = delay }
+                if let delay {
+                    await MainActor.run {
+                        self.nodeDelayMap[name] = delay
+                    }
+                }
             }
 
             await MainActor.run {
-                self.nodeDelayMap.merge(results) { _, new in new }
-                // Update group delays
-                if let idx = self.groups.firstIndex(where: { $0.name == groupName }) {
-                    // Find the "now" node delay and set it on the group
-                    if let now = self.groups[idx].now, let nowDelay = results[now] {
-                        self.groups[idx].delay = nowDelay
-                    }
+                // 用当前选中节点的延迟更新 group 延迟
+                if let idx = self.groups.firstIndex(where: { $0.name == groupName }),
+                   let now = self.groups[idx].now,
+                   let nowDelay = self.nodeDelayMap[now] {
+                    self.groups[idx].delay = nowDelay
                 }
+                self.testingGroupNames.remove(groupName)
             }
         }
     }
 
     func clearFixedProxy(groupName: String) async throws {
         try await api.clearFixedProxy(groupName: groupName)
-    }
-
-    func refreshProvider(name: String) async throws {
-        try await api.updateProvider(name: name)
     }
 
     func startAutoRefresh() {
