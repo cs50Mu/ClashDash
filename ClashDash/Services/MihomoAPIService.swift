@@ -190,20 +190,13 @@ final class MihomoAPIService {
                   let typeStr = dict["type"] as? String else { continue }
 
             if let groupType = ProxyGroupType(rawValue: typeStr) {
-                // 从服务端 history 字段提取最新延迟
-                let latestDelay: Int? = {
-                    guard let history = dict["history"] as? [[String: Any]],
-                          let last = history.last,
-                          let delay = last["delay"] as? Int else { return nil }
-                    return delay
-                }()
                 let group = ProxyGroup(
                     name: name,
                     type: groupType,
                     now: dict["now"] as? String,
                     all: dict["all"] as? [String],
                     hidden: dict["hidden"] as? Bool ?? false,
-                    delay: latestDelay
+                    delay: nil
                 )
                 groups.append(group)
             } else {

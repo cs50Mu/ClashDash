@@ -22,6 +22,24 @@ final class ProxiesViewModel {
         self.api = api
     }
 
+    /// 沿着 now 链递归查找叶子节点的测速延迟
+    /// 例：一键连 → 台湾自动 → [某节点]，返回该节点的 delay
+    private func resolveChainDelay(startName: String?, depth: Int = 0) -> Int? {
+        guard let name = startName, depth < 10 else { return nil }
+
+        // 是叶子节点（普通 proxy），直接返回其延迟
+        if let delay = nodeDelayMap[name] {
+            return delay
+        }
+
+        // 是另一个 group，沿着它的 now 继续追
+        if let subGroup = groups.first(where: { $0.name == name }), let subNow = subGroup.now {
+            return resolveChainDelay(startName: subNow, depth: depth + 1)
+        }
+
+        return nil
+    }
+
     /// 按配置文件中的原始顺序展示（不做任何重排序）
     /// 排除 hidden: true 的组，仅当有搜索文本时额外过滤
     var sortedGroups: [ProxyGroup] {
@@ -51,15 +69,18 @@ final class ProxiesViewModel {
                     self.groups = fetchedGroups
                 }
                 self.nodes = fetchedNodes
-                // 同步服务端返回的延迟到 nodeDelayMap（含节点和子 group），展开时即可显示
+                // 同步服务端返回的节点延迟到 nodeDelayMap
                 for node in fetchedNodes {
                     if let delay = node.delay {
                         self.nodeDelayMap[node.name] = delay
                     }
                 }
-                for group in self.groups {
-                    if let delay = group.delay {
-                        self.nodeDelayMap[group.name] = delay
+
+                // 沿着 now 链解析每个 group 的延迟（不取 group 自己的 history）
+                for i in self.groups.indices {
+                    self.groups[i].delay = self.resolveChainDelay(startName: self.groups[i].now)
+                    if let delay = self.groups[i].delay {
+                        self.nodeDelayMap[self.groups[i].name] = delay
                     }
                 }
                 isLoading = false
@@ -74,6 +95,8 @@ final class ProxiesViewModel {
 
     func switchProxy(groupName: String, to nodeName: String) async throws {
         try await api.switchProxy(groupName: groupName, to: nodeName)
+        // 切换代理后断开所有已有连接，使其立即使用新代理
+        try? await api.closeAllConnections()
     }
 
     func testNodeDelay(nodeName: String) async {
